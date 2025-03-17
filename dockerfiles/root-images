@@ -1,0 +1,29 @@
+# vim: set ft=dockerfile:
+
+# rebuild: 20240730.231036
+
+ARG ROOT_BUILDER_TAG=invalid
+
+FROM quay.io/lvh-images/root-builder-ci:"${ROOT_BUILDER_TAG}" AS builder
+COPY _data /data
+
+RUN lvh version
+
+# mmdebstrap outputs messages in stderr, so we redirect stderr
+#
+# You cannot use KVM during docker build anyway (without insecure option), it
+# will fallback to emulation. However on arm64, libguestfs gives --machine
+# gic-version=host to qemu which will fail the fallback so we need to
+# explicitely tell libguestfs to use tcg
+#
+# for now we only build the kind image for arm64
+ARG TARGETARCH
+RUN if [ "$TARGETARCH" = "amd64" ]; then lvh images build --dir /data 2>&1; fi
+RUN if [ "$TARGETARCH" = "arm64" ]; then LIBGUESTFS_BACKEND_SETTINGS=force_tcg lvh images build --dir /data --image base.qcow2 --image kind.qcow2 2>&1; fi
+RUN zstd --compress --rm --threads=0 /data/images/*.qcow2
+
+# Can't use scratch here because we use `docker create` elsewhere, and
+# that doesn't work without an explicit command. Satisfy this with
+# busybox.
+FROM busybox
+COPY --from=builder /data/images /data/images
