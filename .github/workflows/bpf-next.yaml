@@ -28,7 +28,7 @@ jobs:
           echo "id=$id" | tee -a $GITHUB_OUTPUT
       - name: push PR
         env:
-          GH_TOKEN: ${{ secrets.LVH_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           id=${{ steps.commit.outputs.id }}
           gh pr create \
