@@ -1,0 +1,149 @@
+name: buildx-step
+on:
+  workflow_call:
+    inputs:
+      name:
+        required: true
+        type: string
+      build-file:
+        required: true
+        type: string
+      build-tag:
+        required: true
+        type: string
+      check-files:
+        required: true
+        type: string
+      base-ref:
+        required: true
+        type: string
+      build-args:
+        default: ''
+        type: string
+      dry-run:
+        default: false
+        type: boolean
+      patch-cmd:
+        type: string
+      apply-patch:
+        type: string
+      apply-patch-2:
+        type: string
+      platforms:
+        type: string
+        required: false
+      runner:
+        type: string
+        required: false
+        default: 'ubuntu-latest-4cores-16gb'
+jobs:
+  build:
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - name: init git repo
+        run: |
+          git config user.name "GH action"
+          git config user.email "ghabot@does.not.exist.cilium.org"
+
+      - name: Check if files were modified
+        id: check
+        run: |
+         git fetch origin
+         set +e
+         git diff --quiet --exit-code origin/${{ inputs.base-ref }}..origin/${{ github.event.pull_request.head.ref }} ${{ inputs.check-files }}
+         if [ $? -eq  0 ]; then
+           echo "No changes, no need to rebuild"
+           echo  "build=n" | tee -a $GITHUB_OUTPUT
+         else
+           echo "Need to rebuild"
+           echo  "build=y" | tee -a $GITHUB_OUTPUT
+         fi
+         set -e
+
+      - name: download first patch
+        if: ${{ steps.check.outputs.build == 'y' && inputs.apply-patch != '' }}
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.9
+        with:
+           name: ${{ inputs.apply-patch }}
+           path: /tmp/
+      - name: apply first patch
+        if: ${{ steps.check.outputs.build == 'y' && inputs.apply-patch != '' }}
+        run: |
+          if [ $(wc -l < /tmp/${{ inputs.apply-patch }} ) -gt 0 ]; then
+            cat /tmp/${{ inputs.apply-patch }}
+            git am /tmp/${{ inputs.apply-patch }}
+            git log --oneline -n 2
+          fi
+
+      - name: download second patch
+        if: ${{ steps.check.outputs.build == 'y' && inputs.apply-patch-2 != '' }}
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.9
+        with:
+           name: ${{ inputs.apply-patch-2 }}
+           path: /tmp/
+      - name: apply second patch
+        if: ${{ steps.check.outputs.build == 'y' && inputs.apply-patch-2 != '' }}
+        run: |
+          if [ $(wc -l < /tmp/${{ inputs.apply-patch-2 }} ) -gt 0 ]; then
+            cat /tmp/${{ inputs.apply-patch-2 }}
+            git am /tmp/${{ inputs.apply-patch-2 }}
+            git log --oneline -n 2
+          fi
+
+      - name: evaluate build args
+        id: buildargs
+        run: |
+          {
+            echo 'value<<EOF'
+            echo -n "${{ inputs.build-args }}"
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - name: setup buildx
+        if: ${{ steps.check.outputs.build == 'y' && !inputs.dry-run }}
+        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+      - name: quay login
+        if: ${{ steps.check.outputs.build == 'y' && !inputs.dry-run }}
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: quay.io
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_ROBOT_TOKEN }}
+      - name: build and push
+        if: ${{ steps.check.outputs.build == 'y' && !inputs.dry-run }}
+        uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4 # v6.15.0
+        with:
+          context: .
+          push: true
+          no-cache: true
+          file: ${{ inputs.build-file }}
+          tags: ${{ inputs.build-tag }}
+          build-args: ${{ steps.buildargs.outputs.value }}
+          platforms: ${{ inputs.platforms }}
+      - name: run commands and generate patches
+        if: ${{ steps.check.outputs.build == 'y' && inputs.patch-cmd != '' }}
+        run: |
+            old=$(git rev-parse --abbrev-ref HEAD)
+            git switch -c tmp-${{ inputs.name }}
+            ${{ inputs.patch-cmd }}
+            git add .
+            git commit --all -m "TEMP: ${{ inputs.name }}"
+            git format-patch -1 --stdout | tee ${{ inputs.name }}.patch
+            git switch $old
+
+      - name: generate empty patch
+        if: ${{ steps.check.outputs.build != 'y' && inputs.patch-cmd != '' }}
+        run: |
+            truncate -s 0 ${{ inputs.name }}.patch
+
+      - name: upload patch
+        if: ${{ inputs.patch-cmd != '' }}
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: ${{ inputs.name }}.patch
+          path: ${{ inputs.name }}.patch

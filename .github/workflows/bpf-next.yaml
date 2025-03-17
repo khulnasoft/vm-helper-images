@@ -17,7 +17,7 @@ jobs:
           id=$(date +%Y%m%d.%H%M%S)
           git switch -c pr/bpf-next-${id}
           git config user.name "GH action"
-          git config user.email "ghabot@does.not.exist.khulnasoft.com"
+          git config user.email "ghabot@does.not.exist.cilium.org"
           echo "bpf-next $id" > misc/dummy
           echo "bpf-net $id" >> misc/dummy
           echo "bpf $id" >> misc/dummy
@@ -28,7 +28,7 @@ jobs:
           echo "id=$id" | tee -a $GITHUB_OUTPUT
       - name: push PR
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.LVH_GITHUB_TOKEN }}
         run: |
           id=${{ steps.commit.outputs.id }}
           gh pr create \

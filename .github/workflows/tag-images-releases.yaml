@@ -30,9 +30,9 @@ jobs:
       - name: quay login
         uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
         with:
-          registry: docker.io
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_TOKEN }}
+          registry: quay.io
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_ROBOT_TOKEN }}
       - name: tag images
         run: |
           name=${{ steps.tag.outputs.tag }}
@@ -104,3 +104,4 @@ jobs:
           amd64_image="$multi_image-amd64"
           arm64_image="$multi_image-arm64"
           docker buildx imagetools create -t $root_images_name:main -t $multi_image $amd64_image $arm64_image
+
