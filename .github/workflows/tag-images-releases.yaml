@@ -1,0 +1,106 @@
+name: Image releases
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - v*
+
+# The idea here is we to reuse the images that we build during the PR phase. Since our builds are
+# not reproducabe, this allow us to perform tests in the PR and ensure that everything works as
+# expected when we do a release.
+jobs:
+  tag-images:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Getting image tag
+        id: tag
+        run: |
+          echo tag=${GITHUB_REF##*/} | tee -a $GITHUB_OUTPUT
+      - name: setup docker buildx
+        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+      - name: install crane
+        env:
+          VERSION: v0.19.1
+        run: |
+          URL="https://github.com/google/go-containerregistry/releases/download/${VERSION}/go-containerregistry_Linux_x86_64.tar.gz"
+          curl -fSL $URL | sudo tar -xz -C /usr/local/bin crane
+      - name: quay login
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+      - name: tag images
+        run: |
+          name=${{ steps.tag.outputs.tag }}
+          echo $name
+          for f in $(find ./versions -type f ! -name README.md -printf "%P\n")
+          do
+              tag=$(cat ./versions/$f)
+              path_arch=$(echo $f | grep -oE 'arm64|amd64' || true)
+              arch_suffix=$( [ -n "$path_arch" ] && echo "-$path_arch" || true)
+              echo f=$f tag=$tag arch_suffix=$arch_suffix
+
+              src_image="quay.io/lvh-images/$(echo $f/$tag | sed -e 's_/arm64__;s_/amd64__' | sed -e 's_/_-ci:_; s_/_-_g')"
+              dst_image=$(echo $src_image | sed -e "s/$tag/$name/")
+              dst_image=$(echo $dst_image | sed -e 's/-ci:/:/')
+              dst_image=$(echo ${dst_image}${arch_suffix})
+              echo -e "\033[0;32m${src_image} -> ${dst_image}\e[0m";
+              crane copy $src_image $dst_image
+              # Only tag the "prod" image on pushes to main
+              if [[ "$name" == "main" ]]; then
+                  dst_prod_image=$(echo $src_image | sed -e 's/-ci:/:/')
+                  echo -e "\033[0;32m${src_image} -> ${dst_prod_image}\e[0m";
+                  crane copy $src_image $dst_prod_image
+              fi
+          done
+      - name: create multi-arch kind images
+        run: |
+          # if it exists in arm64, it exists in amd64. The opposite is false for rhel8.
+          for f in $(find ./versions/kind/arm64 -type f -printf "%P\n")
+          do
+              tag=$(cat ./versions/kind/arm64/$f)
+              multi_tag=$(echo $tag | sed 's/-\(arm64\|amd64\)$//')
+              kind_image_name="quay.io/lvh-images/kind"
+              multi_image="$kind_image_name:$f-$multi_tag"
+              amd64_image="$multi_image-amd64"
+              arm64_image="$multi_image-arm64"
+              docker buildx imagetools create -t $kind_image_name:$f-main -t $multi_image $amd64_image $arm64_image
+          done
+      - name: tag amd64 mono-arch rhel8 images
+        run: |
+          # tag without the arch suffix for rhel8 since we only build for amd64
+          for f in $(find ./versions/kind/amd64/ -type f -name rhel8* -printf "%P\n")
+          do
+              tag=$(cat ./versions/kind/amd64/$f)
+              kind_image_name="quay.io/lvh-images/kind"
+              final_tag=$f-$(echo $tag | sed 's/-\(amd64\)$//')
+              src_img=$kind_image_name:$f-$tag
+              echo -e "tagging image \033[0;32m$src_img\e[0m with tag \033[0;32m$final_tag\e[0m"
+              crane tag $src_img $final_tag
+              main_src_img=$kind_image_name:$f-main-amd64
+              main_tag=$f-main
+              echo -e "tagging image \033[0;32m$main_src_img\e[0m with tag \033[0;32m$main_tag\e[0m"
+              crane tag $main_src_img $main_tag
+              # for backward compatibility, we tag rhel8.6 as rhel8
+              if [[ "$f" == "rhel8.6" ]]; then
+                  compatibility_final_tag=rhel8-$(echo $tag | sed 's/-\(amd64\)$//')
+                  compatibility_main_tag=rhel8-main
+                  echo -e "tagging image \033[0;32m$src_img\e[0m with tag \033[0;32m$compatibility_final_tag\e[0m"
+                  crane tag $src_img $compatibility_final_tag
+                  echo -e "tagging image \033[0;32m$main_src_img\e[0m with tag \033[0;32m$compatibility_main_tag\e[0m"
+                  crane tag $main_src_img $compatibility_main_tag
+              fi
+          done
+      - name: create multi-arch root-images images
+        run: |
+          tag=$(cat ./versions/root-images/arm64)
+          multi_tag=$(echo $tag | sed 's/-\(arm64\|amd64\)$//')
+          root_images_name="quay.io/lvh-images/root-images"
+          multi_image="$root_images_name:$multi_tag"
+          amd64_image="$multi_image-amd64"
+          arm64_image="$multi_image-arm64"
+          docker buildx imagetools create -t $root_images_name:main -t $multi_image $amd64_image $arm64_image
